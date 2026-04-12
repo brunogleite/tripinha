@@ -1,0 +1,58 @@
+name: Auto PR Description
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  generate-description:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get diff
+        id: diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD -- . \
+            ':(exclude)package-lock.json' \
+            ':(exclude)*.lock' | head -c 12000 > diff.txt
+          echo "diff=$(cat diff.txt)" >> $GITHUB_OUTPUT
+
+      - name: Generate PR description with Claude
+        id: claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          DIFF=$(cat diff.txt)
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d "{
+              \"model\": \"claude-sonnet-4-20250514\",
+              \"max_tokens\": 1000,
+              \"messages\": [{
+                \"role\": \"user\",
+                \"content\": \"Write a clear GitHub PR description for this diff. Include: ## Summary, ## Changes, ## Testing. Be concise.\n\nDiff:\n$(echo "$DIFF" | head -c 8000 | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')\"
+              }]
+            }")
+          echo "$RESPONSE" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          text = data['content'][0]['text']
+          with open('pr_body.txt', 'w') as f:
+              f.write(text)
+          "
+
+      - name: Update PR description
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} \
+            --body "$(cat pr_body.txt)"
