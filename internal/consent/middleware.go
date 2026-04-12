@@ -1,6 +1,7 @@
 package consent
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/brunogleite/tripinha/internal/auth"
@@ -19,6 +20,7 @@ func RequireConsent(store Storer) func(http.Handler) http.Handler {
 
 			ok, err := store.Exists(r.Context(), userID)
 			if err != nil {
+				log.Printf("failed to save consent event: %v", err) // ✅ log the error, not the event
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}

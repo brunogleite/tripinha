@@ -2,6 +2,7 @@ package consent
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -53,6 +54,7 @@ func (h *Handler) Post(w http.ResponseWriter, r *http.Request) {
 		Version:    req.Version,
 		AcceptedAt: acceptedAt,
 	}); err != nil {
+		log.Printf("failed to upsert consent event: %v", err) // ✅ log the error, not the event
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}

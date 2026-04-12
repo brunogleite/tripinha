@@ -3,6 +3,7 @@ package meals
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -59,6 +60,7 @@ func (h *Handler) Post(w http.ResponseWriter, r *http.Request) {
 		ScannedAt:   time.Now().UTC(),
 	})
 	if err != nil {
+		log.Printf("failed to save meal event: %v", err) // ✅ log the error, not the event
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
