@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -34,7 +35,24 @@ type offResponse struct {
 }
 
 type offProduct struct {
-	Name string `json:"product_name"`
+	Name            string `json:"product_name"`
+	IngredientsText string `json:"ingredients_text"`
+}
+
+// splitIngredients parses a comma-separated ingredients_text into a trimmed slice.
+// Empty text returns nil.
+func splitIngredients(text string) []string {
+	if text == "" {
+		return nil
+	}
+	parts := strings.Split(text, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Fetch looks up a product by barcode.
@@ -66,5 +84,6 @@ func (c *OFFClient) Fetch(ctx context.Context, barcode string) (Product, error) 
 		return Product{}, ErrProductNotFound
 	}
 
-	return Product{Name: result.Product.Name}, nil
+	ingredients := splitIngredients(result.Product.IngredientsText)
+	return Product{Name: result.Product.Name, Ingredients: ingredients}, nil
 }

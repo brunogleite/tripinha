@@ -35,6 +35,16 @@ func (f *fakeMealStore) Save(_ context.Context, e meals.MealEvent) (meals.MealEv
 	return e, nil
 }
 
+// fakeFlaggedLogger is a test double for meals.FlaggedLogger.
+type fakeFlaggedLogger struct {
+	flagged []string
+}
+
+func (f *fakeFlaggedLogger) LogFlagged(_ context.Context, _ int64, ingredients []string) error {
+	f.flagged = append(f.flagged, ingredients...)
+	return nil
+}
+
 var errUpstream = errors.New("upstream error")
 
 // withUserID injects userID into r's context (simulates auth middleware).

@@ -13,6 +13,7 @@ import (
 	"github.com/brunogleite/tripinha/internal/auth"
 	"github.com/brunogleite/tripinha/internal/consent"
 	"github.com/brunogleite/tripinha/internal/meals"
+	"github.com/brunogleite/tripinha/internal/symptoms"
 )
 
 func main() {
@@ -26,7 +27,8 @@ func main() {
 
 	consentStore := consent.NewStore(db)
 	mealStore := meals.NewStore(db)
-	mealHandler := meals.NewHandler(meals.NewOFFClient(), mealStore)
+	mealHandler := meals.NewHandler(meals.NewOFFClient(), mealStore, meals.NewNormalizer(meals.IBSIngredients()), mealStore)
+	symptomHandler := symptoms.NewHandler(symptoms.NewStore(db))
 
 	r := chi.NewRouter()
 
@@ -41,7 +43,7 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(consent.RequireConsent(consentStore))
 			r.Post("/meals", mealHandler.Post)
-			// Future: r.Post("/symptoms", symptomsHandler.Post)
+			r.Post("/symptoms", symptomHandler.Post)
 		})
 	})
 

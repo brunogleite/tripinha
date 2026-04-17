@@ -84,3 +84,32 @@ func TestOFFClient_Fetch_BadJSON(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+// Cycle 12: successful lookup with ingredients_text → Product.Ingredients split and trimmed
+func TestOFFClient_Fetch_WithIngredients(t *testing.T) {
+	srv := offTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": 1,
+			"product": map[string]any{
+				"product_name":     "Nutella",
+				"ingredients_text": "Sugar, Palm Oil, Hazelnuts 13%",
+			},
+		})
+	})
+
+	c := newOFFClientWithBase(srv.URL, srv.Client())
+	got, err := c.Fetch(t.Context(), "3017620422003")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"Sugar", "Palm Oil", "Hazelnuts 13%"}
+	if len(got.Ingredients) != len(want) {
+		t.Fatalf("Ingredients len: got %d, want %d; got %v", len(got.Ingredients), len(want), got.Ingredients)
+	}
+	for i, w := range want {
+		if got.Ingredients[i] != w {
+			t.Errorf("Ingredients[%d]: got %q, want %q", i, got.Ingredients[i], w)
+		}
+	}
+}

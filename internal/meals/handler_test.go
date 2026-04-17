@@ -13,10 +13,11 @@ import (
 
 func TestHandler_Post(t *testing.T) {
 	validBody := `{"barcode":"3017620422003"}`
+	nopNormalizer := meals.NewNormalizer(nil) // no-op: flags everything, existing tests don't check ingredients
 
 	// Cycle 1: no authenticated user → 401
 	t.Run("no authenticated user → 401", func(t *testing.T) {
-		h := meals.NewHandler(&fakeFetcher{}, &fakeMealStore{})
+		h := meals.NewHandler(&fakeFetcher{}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(validBody))
 		w := newRecorder()
 		h.Post(w, r)
@@ -25,7 +26,7 @@ func TestHandler_Post(t *testing.T) {
 
 	// Cycle 2: invalid JSON body → 400
 	t.Run("invalid JSON body → 400", func(t *testing.T) {
-		h := meals.NewHandler(&fakeFetcher{}, &fakeMealStore{})
+		h := meals.NewHandler(&fakeFetcher{}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString("not-json"))
 		r = withUserID(r, "user-1")
 		w := newRecorder()
@@ -35,7 +36,7 @@ func TestHandler_Post(t *testing.T) {
 
 	// Cycle 3: empty barcode → 400
 	t.Run("empty barcode → 400", func(t *testing.T) {
-		h := meals.NewHandler(&fakeFetcher{}, &fakeMealStore{})
+		h := meals.NewHandler(&fakeFetcher{}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(`{"barcode":""}`))
 		r = withUserID(r, "user-1")
 		w := newRecorder()
@@ -45,7 +46,7 @@ func TestHandler_Post(t *testing.T) {
 
 	// Cycle 4: product not found → 404 with barcode in error message
 	t.Run("product not found → 404 with barcode in message", func(t *testing.T) {
-		h := meals.NewHandler(&fakeFetcher{err: meals.ErrProductNotFound}, &fakeMealStore{})
+		h := meals.NewHandler(&fakeFetcher{err: meals.ErrProductNotFound}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(validBody))
 		r = withUserID(r, "user-1")
 		w := newRecorder()
@@ -58,7 +59,7 @@ func TestHandler_Post(t *testing.T) {
 
 	// Cycle 5: product fetcher non-NotFound error → 502 Bad Gateway
 	t.Run("upstream fetch error → 502", func(t *testing.T) {
-		h := meals.NewHandler(&fakeFetcher{err: errUpstream}, &fakeMealStore{})
+		h := meals.NewHandler(&fakeFetcher{err: errUpstream}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(validBody))
 		r = withUserID(r, "user-1")
 		w := newRecorder()
@@ -71,6 +72,8 @@ func TestHandler_Post(t *testing.T) {
 		h := meals.NewHandler(
 			&fakeFetcher{product: meals.Product{Name: "Nutella"}},
 			&fakeMealStore{err: errUpstream},
+			nopNormalizer,
+			&fakeFlaggedLogger{},
 		)
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(validBody))
 		r = withUserID(r, "user-1")
@@ -85,6 +88,8 @@ func TestHandler_Post(t *testing.T) {
 		h := meals.NewHandler(
 			&fakeFetcher{product: meals.Product{Name: "Nutella"}},
 			store,
+			nopNormalizer,
+			&fakeFlaggedLogger{},
 		)
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(validBody))
 		r = withUserID(r, "user-42")
@@ -111,6 +116,41 @@ func TestHandler_Post(t *testing.T) {
 		}
 		if got.ScannedAt.IsZero() {
 			t.Error("ScannedAt should not be zero")
+		}
+	})
+
+	// Cycle 16: handler normalizes ingredients; canonical saved on event; flagged logged without blocking
+	t.Run("canonical ingredients saved; flagged logged; request not blocked", func(t *testing.T) {
+		store := &fakeMealStore{}
+		logger := &fakeFlaggedLogger{}
+		normalizer := meals.NewNormalizer([]string{"Sugar", "Palm Oil"})
+		h := meals.NewHandler(
+			&fakeFetcher{product: meals.Product{
+				Name:        "Nutella",
+				Ingredients: []string{"Sugar", "palm oil", "xylitol"},
+			}},
+			store,
+			normalizer,
+			logger,
+		)
+		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(validBody))
+		r = withUserID(r, "user-42")
+		w := newRecorder()
+		h.Post(w, r)
+
+		assertStatus(t, w, http.StatusCreated)
+
+		wantIngredients := []string{"Sugar", "Palm Oil"}
+		if len(store.saved.Ingredients) != len(wantIngredients) {
+			t.Fatalf("Ingredients len: got %d, want %d; got %v", len(store.saved.Ingredients), len(wantIngredients), store.saved.Ingredients)
+		}
+		for i, want := range wantIngredients {
+			if store.saved.Ingredients[i] != want {
+				t.Errorf("Ingredients[%d]: got %q, want %q", i, store.saved.Ingredients[i], want)
+			}
+		}
+		if len(logger.flagged) != 1 || logger.flagged[0] != "xylitol" {
+			t.Errorf("flagged: got %v, want [xylitol]", logger.flagged)
 		}
 	})
 }

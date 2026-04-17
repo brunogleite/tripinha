@@ -12,13 +12,15 @@ import (
 
 // Handler serves meal-related HTTP endpoints.
 type Handler struct {
-	fetcher ProductFetcher
-	store   Storer
+	fetcher    ProductFetcher
+	store      Storer
+	normalizer IngredientNormalizer
+	flagged    FlaggedLogger
 }
 
-// NewHandler creates a Handler using fetcher and store.
-func NewHandler(fetcher ProductFetcher, store Storer) *Handler {
-	return &Handler{fetcher: fetcher, store: store}
+// NewHandler creates a Handler.
+func NewHandler(fetcher ProductFetcher, store Storer, normalizer IngredientNormalizer, flagged FlaggedLogger) *Handler {
+	return &Handler{fetcher: fetcher, store: store, normalizer: normalizer, flagged: flagged}
 }
 
 // Post handles POST /meals.
@@ -53,16 +55,25 @@ func (h *Handler) Post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	canonical, flaggedIngredients := h.normalizer.Normalize(product.Ingredients)
+
 	event, err := h.store.Save(r.Context(), MealEvent{
 		UserID:      userID,
 		Barcode:     req.Barcode,
 		ProductName: product.Name,
+		Ingredients: canonical,
 		ScannedAt:   time.Now().UTC(),
 	})
 	if err != nil {
 		log.Printf("failed to save meal event: %v", err) // ✅ log the error, not the event
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+
+	if len(flaggedIngredients) > 0 {
+		if err := h.flagged.LogFlagged(r.Context(), event.ID, flaggedIngredients); err != nil {
+			log.Printf("log flagged ingredients for event %d: %v", event.ID, err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
