@@ -92,10 +92,19 @@ func (e *testEnv) sign(t *testing.T, sub, aud string, expiry time.Time) string {
 	return raw
 }
 
+func newTestMiddleware(t *testing.T, issuer, audience string) func(http.Handler) http.Handler {
+	t.Helper()
+	mw, err := auth.NewMiddleware(issuer, audience)
+	if err != nil {
+		t.Fatalf("NewMiddleware: %v", err)
+	}
+	return mw
+}
+
 // Cycle 12: missing token → 401
 func TestNewMiddleware_MissingToken(t *testing.T) {
 	env := newTestEnv(t)
-	mw := auth.NewMiddleware(env.server.URL+"/", testAudience)
+	mw := newTestMiddleware(t, env.server.URL+"/", testAudience)
 
 	reached := false
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -118,7 +127,7 @@ func TestNewMiddleware_MissingToken(t *testing.T) {
 // Cycle 13: expired token → 401
 func TestNewMiddleware_ExpiredToken(t *testing.T) {
 	env := newTestEnv(t)
-	mw := auth.NewMiddleware(env.server.URL+"/", testAudience)
+	mw := newTestMiddleware(t, env.server.URL+"/", testAudience)
 
 	token := env.sign(t, "user-expired", testAudience, time.Now().Add(-time.Hour))
 
@@ -139,7 +148,7 @@ func TestNewMiddleware_ExpiredToken(t *testing.T) {
 // Cycle 14: wrong audience → 401
 func TestNewMiddleware_WrongAudience(t *testing.T) {
 	env := newTestEnv(t)
-	mw := auth.NewMiddleware(env.server.URL+"/", testAudience)
+	mw := newTestMiddleware(t, env.server.URL+"/", testAudience)
 
 	token := env.sign(t, "user-1", "https://wrong-audience.test", time.Now().Add(time.Hour))
 
@@ -160,7 +169,7 @@ func TestNewMiddleware_WrongAudience(t *testing.T) {
 // Cycle 15: valid token → 200, sub claim stored in context as user ID
 func TestNewMiddleware_ValidToken(t *testing.T) {
 	env := newTestEnv(t)
-	mw := auth.NewMiddleware(env.server.URL+"/", testAudience)
+	mw := newTestMiddleware(t, env.server.URL+"/", testAudience)
 
 	token := env.sign(t, "user-123", testAudience, time.Now().Add(time.Hour))
 

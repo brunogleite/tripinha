@@ -20,7 +20,7 @@ func RequireConsent(store Storer) func(http.Handler) http.Handler {
 
 			ok, err := store.Exists(r.Context(), userID)
 			if err != nil {
-				log.Printf("failed to save consent event: %v", err) // ✅ log the error, not the event
+				log.Printf("check consent for user %s: %v", userID, err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}

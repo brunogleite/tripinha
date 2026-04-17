@@ -33,17 +33,17 @@ func (s *Store) Save(ctx context.Context, e MealEvent) (MealEvent, error) {
 		e.UserID, e.Barcode, e.ProductName, e.ScannedAt,
 	).Scan(&e.ID)
 	if err != nil {
-		return MealEvent{}, err
+		return MealEvent{}, fmt.Errorf("insert meal event: %w", err)
 	}
 
-	for _, name := range e.Ingredients {
+	if len(e.Ingredients) > 0 {
 		_, err = tx.Exec(ctx,
 			`INSERT INTO meal_ingredients (meal_event_id, ingredient_name)
-			 VALUES ($1, $2)`,
-			e.ID, name,
+			 SELECT $1, unnest($2::text[])`,
+			e.ID, e.Ingredients,
 		)
 		if err != nil {
-			return MealEvent{}, fmt.Errorf("insert ingredient %q: %w", name, err)
+			return MealEvent{}, fmt.Errorf("insert ingredients: %w", err)
 		}
 	}
 
@@ -56,15 +56,16 @@ func (s *Store) Save(ctx context.Context, e MealEvent) (MealEvent, error) {
 // LogFlagged inserts unrecognized ingredients into flagged_ingredients for manual review.
 // Errors are logged by the caller but must not block the HTTP response.
 func (s *Store) LogFlagged(ctx context.Context, mealEventID int64, ingredients []string) error {
-	for _, name := range ingredients {
-		_, err := s.db.Exec(ctx,
-			`INSERT INTO flagged_ingredients (meal_event_id, raw_ingredient)
-			 VALUES ($1, $2)`,
-			mealEventID, name,
-		)
-		if err != nil {
-			return fmt.Errorf("log flagged ingredient %q: %w", name, err)
-		}
+	if len(ingredients) == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(ctx,
+		`INSERT INTO flagged_ingredients (meal_event_id, raw_ingredient)
+		 SELECT $1, unnest($2::text[])`,
+		mealEventID, ingredients,
+	)
+	if err != nil {
+		return fmt.Errorf("log flagged ingredients: %w", err)
 	}
 	return nil
 }

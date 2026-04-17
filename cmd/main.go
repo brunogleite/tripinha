@@ -5,6 +5,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,11 +22,18 @@ import (
 func main() {
 	_ = godotenv.Load() // env may already be set in production
 
-	db, err := pgxpool.New(context.Background(), mustEnv("DATABASE_URL"))
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	db, err := pgxpool.New(ctx, mustEnv("DATABASE_URL"))
 	if err != nil {
 		log.Fatalf("connect db: %v", err)
 	}
-	defer db.Close()
+
+	authMiddleware, err := auth.NewMiddleware("https://"+mustEnv("AUTH0_DOMAIN")+"/", mustEnv("AUTH0_AUDIENCE"))
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
 
 	consentStore := consent.NewStore(db)
 	mealStore := meals.NewStore(db)
@@ -34,7 +44,7 @@ func main() {
 
 	// All routes require a valid Auth0 JWT.
 	r.Group(func(r chi.Router) {
-		r.Use(auth.NewMiddleware("https://"+mustEnv("AUTH0_DOMAIN")+"/", mustEnv("AUTH0_AUDIENCE")))
+		r.Use(authMiddleware)
 
 		// Consent — no prior consent required to record it.
 		r.Post("/consent", consent.NewHandler(consentStore).Post)
@@ -47,11 +57,25 @@ func main() {
 		})
 	})
 
-	addr := ":" + envOr("PORT", "8080")
-	log.Printf("listening on %s", addr)
-	if err := http.ListenAndServe(addr, r); err != nil {
-		log.Fatalf("serve: %v", err)
+	server := &http.Server{Addr: ":" + envOr("PORT", "8080"), Handler: r}
+
+	go func() {
+		log.Printf("listening on %s", server.Addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("serve: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("shutting down...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("server shutdown: %v", err)
 	}
+	db.Close()
 }
 
 func mustEnv(key string) string {
