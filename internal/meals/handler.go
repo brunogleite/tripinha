@@ -2,7 +2,7 @@ package meals
 
 import (
 	"encoding/json"
-	"errors"
+	"log"
 	"net/http"
 
 	"github.com/brunogleite/tripinha/internal/auth"
@@ -40,18 +40,18 @@ func (h *Handler) Post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	event, err := h.svc.LogMeal(r.Context(), userID, req.Barcode)
 	if err != nil {
-		switch {
-		case errors.Is(err, ErrProductNotFound):
-			http.Error(w, "no product found for barcode: "+req.Barcode, http.StatusNotFound)
-		case errors.Is(err, ErrFetchFailed):
-			http.Error(w, "failed to fetch product", http.StatusBadGateway)
-		default:
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-		}
+		log.Printf("failed to save meal event: %v", err) // ✅ log the error, not the event
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	if len(flaggedIngredients) > 0 {
+		if err := h.flagged.LogFlagged(r.Context(), event.ID, flaggedIngredients); err != nil {
+			log.Printf("log flagged ingredients for event %d: %v", event.ID, err)
+		}
+	}
+	//until here
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
