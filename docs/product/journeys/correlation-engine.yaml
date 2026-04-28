@@ -1,0 +1,257 @@
+schema_version: 1
+
+journey:
+  name: "Correlation Engine — IBS Trigger Discovery"
+  goal: "Identify which food ingredients consistently precede IBS symptoms for a given user"
+  persona: "IBS user (Sofia Andrade) — indirect beneficiary via GET /triggers"
+  feature_id: "correlation-engine"
+  issue: "#7"
+  type: backend_service  # no UI — data flow journey
+
+  emotional_arc:
+    start: "Uncertain — Sofia logs meals and symptoms but sees no patterns yet"
+    middle: "Processing — engine quietly correlates data in the background"
+    end: "Confident — Sofia queries GET /triggers and sees actionable candidates"
+
+steps:
+  - id: 1
+    name: "Data Ready (upstream dependencies #4, #5)"
+    action: "meal_events, meal_ingredients, and symptom_events tables are populated"
+
+    shared_artifacts:
+      - name: "user_id"
+        source: "Auth0 JWT decoded by auth middleware"
+        displayed_as: "user_id column in all tables"
+        consumers:
+          - "meal_events.user_id"
+          - "symptom_events.user_id"
+          - "trigger_candidates.user_id"
+
+      - name: "ingredient_name"
+        source: "meal_ingredients table (normalized by meals service)"
+        displayed_as: "ingredient_name in correlation query results"
+        consumers:
+          - "Engine correlation query"
+          - "trigger_candidates.ingredient_name"
+          - "GET /triggers response body"
+
+    emotional_state:
+      entry: "Uncertain — user has data but no insight"
+      exit: "Waiting — data is there, processing has not run yet"
+
+    integration_checkpoint: |
+      meal_ingredients.meal_event_id joins correctly to meal_events.id.
+      meal_events has index on (user_id, scanned_at).
+      symptom_events has index on (user_id, occurred_at).
+
+    failure_modes:
+      - "meal_events exist but meal_ingredients rows are missing (ingredient extraction failed)"
+      - "symptom_events.type contains unexpected values outside known symptom vocabulary"
+
+    gherkin: |
+      Scenario: Ingredient and symptom data available for correlation
+        Given Sofia has logged at least one meal with ingredients
+        And Sofia has logged at least one symptom event
+        When the correlation engine is triggered for Sofia
+        Then the engine can query both meal_ingredients and symptom_events for her user_id
+
+  - id: 2
+    name: "Engine Triggered"
+    action: "Correlation run initiated — either by background scheduler or on-demand POST"
+
+    shared_artifacts:
+      - name: "LOOKBACK_WINDOW_HOURS"
+        source: "Environment variable LOOKBACK_WINDOW_HOURS (default: 24)"
+        displayed_as: "window parameter in SQL query and trigger_candidates.window_hours"
+        consumers:
+          - "Engine window query"
+          - "trigger_candidates.window_hours"
+          - "GET /triggers response"
+
+      - name: "CRON_INTERVAL"
+        source: "Environment variable CRON_INTERVAL (default: 6h)"
+        displayed_as: "Scheduler tick interval"
+        consumers:
+          - "Background scheduler"
+
+    emotional_state:
+      entry: "Unaware — Sofia is not present for this step"
+      exit: "Unaware — processing happens silently"
+
+    integration_checkpoint: |
+      On-demand endpoint POST /admin/correlations/run is protected (admin-only or internal).
+      Scheduler runs every CRON_INTERVAL, not per-request.
+      Advisory lock prevents concurrent runs for the same user_id.
+
+    failure_modes:
+      - "Scheduler fires while previous run still in progress → advisory lock skips duplicate"
+      - "On-demand endpoint called with invalid/missing user_id → 400 Bad Request"
+      - "Database unavailable at run time → engine logs error, scheduler retries next interval"
+
+    gherkin: |
+      Scenario: Background scheduler initiates correlation run
+        Given the scheduler interval has elapsed (CRON_INTERVAL)
+        And there are users with unprocessed symptom events
+        When the scheduler fires
+        Then the engine runs a correlation pass for each eligible user
+
+      Scenario: On-demand trigger for testing
+        Given an authorized caller sends POST /admin/correlations/run with {"user_id": "sofia"}
+        When the request is received
+        Then the engine runs a correlation pass for Sofia immediately
+        And returns HTTP 202 Accepted
+
+  - id: 3
+    name: "Window Query"
+    action: "For each symptom_event, count ingredient occurrences in lookback window"
+
+    shared_artifacts:
+      - name: "LOOKBACK_WINDOW_HOURS"
+        source: "env var (see step 2)"
+        displayed_as: "interval in SQL: scanned_at BETWEEN (occurred_at - interval) AND occurred_at"
+        consumers:
+          - "Correlation SQL query"
+
+      - name: "symptom_type"
+        source: "symptom_events.type column"
+        displayed_as: "Per-type grouping key in correlation results"
+        consumers:
+          - "Engine per-type loop"
+          - "trigger_candidates.symptom_type"
+          - "GET /triggers response"
+
+    emotional_state:
+      entry: "Invisible to user"
+      exit: "Invisible to user"
+
+    integration_checkpoint: |
+      Query must be scoped by user_id and symptom_type.
+      Window boundary is [occurred_at - LOOKBACK_WINDOW_HOURS, occurred_at] inclusive.
+      Counts group by ingredient_name, not by meal_event_id.
+
+    failure_modes:
+      - "Zero meal events in window → 0 correlations for this symptom event (expected, not error)"
+      - "ingredient_name values not normalized → duplicates inflate counts (upstream bug)"
+      - "Very large history (1000+ events) → query takes >30s → needs EXPLAIN ANALYZE + index review"
+
+    gherkin: |
+      Scenario: Ingredients counted within lookback window
+        Given Sofia has a bloating event at 14:45
+        And she ate fructose-containing food at 10:30 (within 24h window)
+        And she ate lactose-containing food 36 hours before (outside window)
+        When the engine runs the window query for this symptom event
+        Then fructose is counted as 1 occurrence in this window
+        And lactose is not counted
+
+      Scenario: Runs independently per symptom type
+        Given Sofia has both bloating and cramping events
+        When the engine runs
+        Then bloating correlations and cramping correlations are computed separately
+        And an ingredient can be a candidate for one type but not the other
+
+  - id: 4
+    name: "Threshold Check and Upsert"
+    action: "Accumulate correlation counts; upsert trigger_candidates when count >= threshold"
+
+    shared_artifacts:
+      - name: "CORRELATION_THRESHOLD"
+        source: "Environment variable CORRELATION_THRESHOLD (default: 5)"
+        displayed_as: "Minimum count to become a candidate trigger"
+        consumers:
+          - "Engine threshold comparison"
+          - "trigger_candidates table (implicit — only rows above threshold are written)"
+
+    emotional_state:
+      entry: "Invisible to user"
+      exit: "Invisible to user — but results are now persisted for query"
+
+    integration_checkpoint: |
+      trigger_candidates uses UPSERT (ON CONFLICT user_id, ingredient_name, symptom_type DO UPDATE).
+      correlation_count reflects the TOTAL across all symptom windows, not per-window.
+      last_evaluated_at is updated on every upsert.
+
+    failure_modes:
+      - "Upsert conflict on stale data — resolved by updating correlation_count and last_evaluated_at"
+      - "Threshold = 0 configured accidentally → every ingredient becomes a candidate → guardrail: reject threshold < 1"
+
+    gherkin: |
+      Scenario: Ingredient becomes a trigger candidate when threshold exceeded
+        Given fructose has appeared in 6 correlated bloating windows for Sofia
+        And CORRELATION_THRESHOLD is 5
+        When the threshold check runs
+        Then fructose is upserted into trigger_candidates for Sofia with symptom_type=bloating
+        And correlation_count=6
+
+      Scenario: Ingredient below threshold is not persisted
+        Given lactose has appeared in 3 correlated bloating windows for Sofia
+        And CORRELATION_THRESHOLD is 5
+        When the threshold check runs
+        Then lactose is not written to trigger_candidates
+
+      Scenario: Existing candidate is updated when count grows
+        Given fructose is already in trigger_candidates with correlation_count=6
+        When the engine runs again and finds 7 correlated windows
+        Then trigger_candidates is updated with correlation_count=7
+        And last_evaluated_at is refreshed
+
+  - id: 5
+    name: "Results Surfaced via GET /triggers"
+    action: "Handler reads trigger_candidates and returns JSON response"
+
+    shared_artifacts:
+      - name: "trigger_candidates"
+        source: "trigger_candidates table (written by engine in step 4)"
+        displayed_as: "JSON array in GET /triggers response body"
+        consumers:
+          - "GET /triggers handler"
+          - "IBS user (Sofia) via API client"
+
+    emotional_state:
+      entry: "Curious — Sofia queries the endpoint to understand her patterns"
+      exit: "Confident — Sofia has actionable ingredient-symptom correlations"
+
+    integration_checkpoint: |
+      GET /triggers is scoped to the authenticated user_id (no cross-user leakage).
+      Empty trigger_candidates returns HTTP 200 with {"triggers": []}, not 404.
+      Response includes window_hours and correlation_count so the user can assess confidence.
+
+    failure_modes:
+      - "Engine has not run yet → empty triggers list (not an error)"
+      - "user_id mismatch (JWT vs DB) → empty list (silent — auth layer owns this)"
+      - "DB unavailable → HTTP 503 with Retry-After header"
+
+    gherkin: |
+      Scenario: User retrieves their trigger candidates
+        Given fructose is in trigger_candidates for Sofia (bloating, count=6)
+        When Sofia calls GET /triggers
+        Then the response contains fructose as a trigger for bloating
+        And correlation_count=6 and window_hours=24 are included in the response
+
+      Scenario: Empty results before engine has run
+        Given Sofia has meals and symptoms but the engine has not run yet
+        When Sofia calls GET /triggers
+        Then the response is HTTP 200 with {"triggers": []}
+
+      Scenario: Results are user-scoped
+        Given Marco also has trigger_candidates in the table
+        When Sofia calls GET /triggers
+        Then Sofia's response does not include Marco's triggers
+
+integration_validation:
+  shared_artifact_consistency:
+    - artifact: "LOOKBACK_WINDOW_HOURS"
+      must_match_across: [2, 3, 5]
+      failure_message: "Window used in query must match window stored in trigger_candidates.window_hours"
+
+    - artifact: "user_id"
+      must_match_across: [1, 2, 3, 4, 5]
+      failure_message: "All queries must filter by the same user_id from the JWT — cross-user leakage is a security failure"
+
+    - artifact: "symptom_type"
+      must_match_across: [3, 4, 5]
+      failure_message: "symptom_type used in correlation grouping must match what is stored and returned"
+
+changelog:
+  - date: "2026-04-28"
+    feature: "correlation-engine"
+    change: "Initial journey schema created in DISCUSS wave"

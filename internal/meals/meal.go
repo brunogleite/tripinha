@@ -25,6 +25,9 @@ type Product struct {
 // ErrProductNotFound is returned when a barcode lookup finds no matching product.
 var ErrProductNotFound = errors.New("product not found")
 
+// ErrFetchFailed is returned when the product fetcher fails for a non-NotFound reason.
+var ErrFetchFailed = errors.New("fetch failed")
+
 // Storer persists meal events.
 type Storer interface {
 	Save(ctx context.Context, e MealEvent) (MealEvent, error)

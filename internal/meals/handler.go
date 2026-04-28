@@ -3,24 +3,19 @@ package meals
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
-	"time"
 
 	"github.com/brunogleite/tripinha/internal/auth"
 )
 
 // Handler serves meal-related HTTP endpoints.
 type Handler struct {
-	fetcher    ProductFetcher
-	store      Storer
-	normalizer IngredientNormalizer
-	flagged    FlaggedLogger
+	svc *Service
 }
 
 // NewHandler creates a Handler.
-func NewHandler(fetcher ProductFetcher, store Storer, normalizer IngredientNormalizer, flagged FlaggedLogger) *Handler {
-	return &Handler{fetcher: fetcher, store: store, normalizer: normalizer, flagged: flagged}
+func NewHandler(svc *Service) *Handler {
+	return &Handler{svc: svc}
 }
 
 // Post handles POST /meals.
@@ -45,35 +40,17 @@ func (h *Handler) Post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	product, err := h.fetcher.Fetch(r.Context(), req.Barcode)
+	event, err := h.svc.LogMeal(r.Context(), userID, req.Barcode)
 	if err != nil {
-		if errors.Is(err, ErrProductNotFound) {
+		switch {
+		case errors.Is(err, ErrProductNotFound):
 			http.Error(w, "no product found for barcode: "+req.Barcode, http.StatusNotFound)
-			return
+		case errors.Is(err, ErrFetchFailed):
+			http.Error(w, "failed to fetch product", http.StatusBadGateway)
+		default:
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
-		http.Error(w, "failed to fetch product", http.StatusBadGateway)
 		return
-	}
-
-	canonical, flaggedIngredients := h.normalizer.Normalize(product.Ingredients)
-
-	event, err := h.store.Save(r.Context(), MealEvent{
-		UserID:      userID,
-		Barcode:     req.Barcode,
-		ProductName: product.Name,
-		Ingredients: canonical,
-		ScannedAt:   time.Now().UTC(),
-	})
-	if err != nil {
-		log.Printf("failed to save meal event: %v", err) // ✅ log the error, not the event
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	if len(flaggedIngredients) > 0 {
-		if err := h.flagged.LogFlagged(r.Context(), event.ID, flaggedIngredients); err != nil {
-			log.Printf("log flagged ingredients for event %d: %v", event.ID, err)
-		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

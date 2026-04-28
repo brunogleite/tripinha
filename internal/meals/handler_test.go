@@ -15,9 +15,13 @@ func TestHandler_Post(t *testing.T) {
 	validBody := `{"barcode":"3017620422003"}`
 	nopNormalizer := meals.NewNormalizer(nil) // no-op: flags everything, existing tests don't check ingredients
 
+	newHandler := func(fetcher meals.ProductFetcher, store meals.Storer, normalizer meals.IngredientNormalizer, flagged meals.FlaggedLogger) *meals.Handler {
+		return meals.NewHandler(meals.NewService(fetcher, store, normalizer, flagged))
+	}
+
 	// Cycle 1: no authenticated user → 401
 	t.Run("no authenticated user → 401", func(t *testing.T) {
-		h := meals.NewHandler(&fakeFetcher{}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
+		h := newHandler(&fakeFetcher{}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(validBody))
 		w := newRecorder()
 		h.Post(w, r)
@@ -26,7 +30,7 @@ func TestHandler_Post(t *testing.T) {
 
 	// Cycle 2: invalid JSON body → 400
 	t.Run("invalid JSON body → 400", func(t *testing.T) {
-		h := meals.NewHandler(&fakeFetcher{}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
+		h := newHandler(&fakeFetcher{}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString("not-json"))
 		r = withUserID(r, "user-1")
 		w := newRecorder()
@@ -36,7 +40,7 @@ func TestHandler_Post(t *testing.T) {
 
 	// Cycle 3: empty barcode → 400
 	t.Run("empty barcode → 400", func(t *testing.T) {
-		h := meals.NewHandler(&fakeFetcher{}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
+		h := newHandler(&fakeFetcher{}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(`{"barcode":""}`))
 		r = withUserID(r, "user-1")
 		w := newRecorder()
@@ -46,7 +50,7 @@ func TestHandler_Post(t *testing.T) {
 
 	// Cycle 4: product not found → 404 with barcode in error message
 	t.Run("product not found → 404 with barcode in message", func(t *testing.T) {
-		h := meals.NewHandler(&fakeFetcher{err: meals.ErrProductNotFound}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
+		h := newHandler(&fakeFetcher{err: meals.ErrProductNotFound}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(validBody))
 		r = withUserID(r, "user-1")
 		w := newRecorder()
@@ -59,7 +63,7 @@ func TestHandler_Post(t *testing.T) {
 
 	// Cycle 5: product fetcher non-NotFound error → 502 Bad Gateway
 	t.Run("upstream fetch error → 502", func(t *testing.T) {
-		h := meals.NewHandler(&fakeFetcher{err: errUpstream}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
+		h := newHandler(&fakeFetcher{err: errUpstream}, &fakeMealStore{}, nopNormalizer, &fakeFlaggedLogger{})
 		r := httptest.NewRequest(http.MethodPost, "/meals", bytes.NewBufferString(validBody))
 		r = withUserID(r, "user-1")
 		w := newRecorder()
@@ -69,7 +73,7 @@ func TestHandler_Post(t *testing.T) {
 
 	// Cycle 6: store save error → 500
 	t.Run("store error → 500", func(t *testing.T) {
-		h := meals.NewHandler(
+		h := newHandler(
 			&fakeFetcher{product: meals.Product{Name: "Nutella"}},
 			&fakeMealStore{err: errUpstream},
 			nopNormalizer,
@@ -85,7 +89,7 @@ func TestHandler_Post(t *testing.T) {
 	// Cycle 7: valid request → 201 with meal event JSON
 	t.Run("valid request → 201 with meal event body", func(t *testing.T) {
 		store := &fakeMealStore{}
-		h := meals.NewHandler(
+		h := newHandler(
 			&fakeFetcher{product: meals.Product{Name: "Nutella"}},
 			store,
 			nopNormalizer,
@@ -124,7 +128,7 @@ func TestHandler_Post(t *testing.T) {
 		store := &fakeMealStore{}
 		logger := &fakeFlaggedLogger{}
 		normalizer := meals.NewNormalizer([]string{"Sugar", "Palm Oil"})
-		h := meals.NewHandler(
+		h := newHandler(
 			&fakeFetcher{product: meals.Product{
 				Name:        "Nutella",
 				Ingredients: []string{"Sugar", "palm oil", "xylitol"},

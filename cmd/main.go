@@ -37,7 +37,8 @@ func main() {
 
 	consentStore := consent.NewStore(db)
 	mealStore := meals.NewStore(db)
-	mealHandler := meals.NewHandler(meals.NewOFFClient(), mealStore, meals.NewNormalizer(meals.IBSIngredients()), mealStore)
+	mealSvc := meals.NewService(meals.NewOFFClient(), mealStore, meals.NewNormalizer(meals.IBSIngredients()), mealStore)
+	mealHandler := meals.NewHandler(mealSvc)
 	symptomHandler := symptoms.NewHandler(symptoms.NewStore(db))
 
 	r := chi.NewRouter()

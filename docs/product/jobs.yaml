@@ -1,0 +1,22 @@
+schema_version: 1
+# Bootstrap jobs.yaml — first nWave feature. Expand as more features are discovered.
+
+jobs:
+  - id: job-001
+    title: "Identify food triggers for IBS symptoms"
+    statement: >
+      When I experience recurring IBS symptoms after meals,
+      I want to know which ingredients consistently precede my flare-ups,
+      so I can make confident dietary decisions without relying on guesswork or elimination diets alone.
+    persona: "IBS user (self-managing, diet-conscious)"
+    source_issue: "#7"
+    status: in_progress
+    stories:
+      - US-CE-01
+      - US-CE-02
+      - US-CE-03
+      - US-CE-04
+
+changelog:
+  - date: "2026-04-28"
+    change: "Bootstrap from correlation-engine DISCUSS wave (issue #7)"
